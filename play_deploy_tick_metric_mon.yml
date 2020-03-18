@@ -170,7 +170,7 @@
     when: deploy_mode | default('deploy') == 'undeploy'
 
   handlers:
-    - name: restart telegraf
-      command: "docker restart {{ prefix }}-telegraf-main"
-    - name: restart grafana
-      command: "docker restart {{ prefix }}-grafana"
+  - name: restart telegraf
+    command: "docker restart {{ prefix }}-telegraf-main"
+  - name: restart grafana
+    command: "docker restart {{ prefix }}-grafana"
