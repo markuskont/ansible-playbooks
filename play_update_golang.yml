@@ -1,0 +1,29 @@
+- name: update go
+  connection: local
+  hosts: localhost
+  vars:
+    home: 
+    version: 1.14
+    source: "https://dl.google.com/go/go{{ version }}.linux-amd64.tar.gz"
+    sha256sum: 08df79b46b0adf498ea9f320a0f23d6ec59e9003660b4c9c1ce8e5e2c6f823ca
+  tasks:
+  - name: remove old go install
+    file:
+      path: "{{ ansible_env.HOME }}/.local/go/"
+      state: absent
+
+  - name: download and set up new go
+    unarchive:
+      src: "{{ source }}"
+      dest: "{{ ansible_env.HOME }}/.local/"
+      remote_src: yes
+  
+  - name: print new go version
+    command: go version
+    register: output
+
+  - debug:
+      msg: "{{ output.stdout }}"
+
+  - name: update coding tools via neovim
+    command: nvim +GoUpdateBinaries +qa --headless

@@ -1,0 +1,177 @@
+---
+- name: Set up local tick stack in docker for metric monitoring
+  connection: local
+  hosts: localhost
+  vars:
+    prefix: local-tick
+
+    images:
+    - influxdb:latest
+    - telegraf:latest
+    - grafana/grafana:latest
+
+    networks:
+    - name: "{{ prefix }}-internal"
+
+    influx_datasource:
+      name: telegraf
+      type: influxdb
+      access: proxy
+      url: "http://{{ prefix }}-influxdb:8086"
+      database: telegraf
+      isDefault: true
+
+    grafana_provision:
+      apiVersion: 1
+      providers:
+      - name: "{{ prefix }}"
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /opt/dashboards
+
+  tasks:
+  - name: pull images
+    docker_image:
+      name: "{{ item }}"
+      source: pull
+      force_source: yes
+    retries: 15
+    delay: 2
+    register: docker_pull
+    until: not docker_pull.failed
+    loop: "{{ images }}"
+    when: not deploy_mode | default('deploy') == 'undeploy'
+
+  - name: Deploy docker networks
+    run_once: true
+    docker_network:
+      name: "{{ item.name }}"
+      driver: bridge
+      enable_ipv6: no
+      state: "{{ 'absent' if deploy_mode | default('deploy') == 'undeploy' else 'present' }}"
+    loop: "{{ networks }}"
+
+  - name: set up influxdb
+    docker_container:
+      name: "{{ prefix }}-influxdb"
+      hostname: "{{ prefix }}-influxdb"
+      image: "{{ images[0] }}"
+      volumes:
+      - "{{ prefix }}-influx-data:/var/lib/influxdb:rw"
+      purge_networks: yes
+      state: "{{ 'absent' if deploy_mode | default('deploy') == 'undeploy' else 'started' }}"
+      restart_policy: unless-stopped
+      networks: "{{ networks }}"
+      published_ports:
+      - 127.0.0.1:8086:8086
+      env:
+        INFLUXDB_REPORTING_DISABLED: 'true'
+
+  - name: create config dir
+    file:
+      path: configs/
+      state: directory
+      mode: 0755
+    when: not deploy_mode | default('deploy') == 'undeploy'
+
+  - name: set up telegraf config
+    template:
+      src: telegraf.j2
+      dest: configs/telegraf.conf
+      mode: 0644
+    vars:
+      hostname: "{{ ansible_facts.hostname }}"
+      influx_urls:
+      - "http://127.0.0.1:8086"
+      monitor_docker: true
+    when: not deploy_mode | default('deploy') == 'undeploy'
+    notify:
+      - restart telegraf
+
+  - name: set up telegraf
+    docker_container:
+      name: "{{ prefix }}-telegraf-main"
+      hostname: "{{ prefix }}-telegraf-main"
+      image: "{{ images[1] }}"
+      volumes:
+      - ./configs/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/rootfs/sys:ro
+      - /proc:/rootfs/proc:ro
+      - /etc:/rootfs/etc:ro
+      - /:/hostfs:ro
+      purge_networks: yes
+      state: "{{ 'absent' if deploy_mode == 'undeploy' else 'started' }}"
+      restart_policy: unless-stopped
+      network_mode: host
+      published_ports: []
+      env:
+        HOST_PROC: /rootfs/proc
+        HOST_SYS: /rootfs/sys
+        HOST_ETC: /rootfs/etc
+        HOST_MOUNT_PREFIX: /hostfs
+
+  - name: set up grafana dashboard deploy config
+    template:
+      src: grafana-provision.j2
+      dest: configs/grafana-provision.yml
+      mode: 0644
+    when: not deploy_mode | default('deploy') == 'undeploy'
+    notify:
+    - restart grafana
+
+  - name: set up grafana
+    docker_container:
+      name: "{{ prefix }}-grafana"
+      hostname: "{{ prefix }}-grafana"
+      image: "{{ images[2] }}"
+      volumes:
+      - "{{ prefix }}-grafana-data:/var/lib/grafana:rw"
+      - ./files/grafana-provision/:/opt/dashboards:ro
+      - ./configs/grafana-provision.yml:/etc/grafana/provisioning/dashboards/000-grafana-provision.yml:ro
+      purge_networks: yes
+      state: "{{ 'absent' if deploy_mode == 'undeploy' else 'started' }}"
+      restart_policy: unless-stopped
+      networks: "{{ networks }}"
+      published_ports:
+      - 3000:3000
+      env: {}
+
+  - name: Set up datasource
+    run_once: true
+    uri:
+      url: "http://localhost:3000/api/datasources"
+      method: POST
+      body: "{{ influx_datasource | to_json }}"
+      body_format: json
+      url_username: admin
+      url_password: admin
+      force_basic_auth: yes
+      status_code:
+      - 200
+      - 409
+    retries: 3
+    delay: 2
+    register: result
+    until: result.status == 200 or ("json" in result and result.json.message == "Data source with same name already exists")
+    #until: ("json" in result and result.json.message == "Data source with same name already exists")
+    when: not deploy_mode | default('deploy') == 'undeploy'
+
+  - name: Remove data volumes on undeploy
+    docker_volume:
+      name: "{{ item }}"
+      state: absent
+    loop:
+    - "{{ prefix }}-influx-data"
+    - "{{ prefix }}-grafana-data"
+    when: deploy_mode | default('deploy') == 'undeploy'
+
+  handlers:
+    - name: restart telegraf
+      command: "docker restart {{ prefix }}-telegraf-main"
+    - name: restart grafana
+      command: "docker restart {{ prefix }}-grafana"
