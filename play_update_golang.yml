@@ -3,7 +3,7 @@
   hosts: localhost
   vars:
     home: 
-    version: 1.14
+    version: 1.14.1
     source: "https://dl.google.com/go/go{{ version }}.linux-amd64.tar.gz"
     sha256sum: 08df79b46b0adf498ea9f320a0f23d6ec59e9003660b4c9c1ce8e5e2c6f823ca
   tasks:
